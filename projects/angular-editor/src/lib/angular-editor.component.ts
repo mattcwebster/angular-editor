@@ -1,25 +1,34 @@
 import {
-  AfterContentInit,
+  AfterViewInit,
+  Attribute,
+  ChangeDetectorRef,
   Component,
   EventEmitter,
   forwardRef,
+  HostBinding,
+  HostListener,
   Inject,
   Input,
+  OnDestroy,
   OnInit,
   Output,
   Renderer2,
+  SecurityContext,
   ViewChild
 } from '@angular/core';
-import {ControlValueAccessor, NG_VALUE_ACCESSOR} from "@angular/forms";
-import {AngularEditorConfig, angularEditorConfig} from "./config";
-import {AngularEditorToolbarComponent} from "./angular-editor-toolbar.component";
-import {AngularEditorService} from "./angular-editor.service";
-import {DOCUMENT} from "@angular/common";
+import {ControlValueAccessor, NG_VALUE_ACCESSOR} from '@angular/forms';
+import {AngularEditorConfig, angularEditorConfig} from './config';
+import {AngularEditorToolbarComponent} from './angular-editor-toolbar.component';
+import {AngularEditorService} from './angular-editor.service';
+import {DOCUMENT} from '@angular/common';
+import {DomSanitizer} from '@angular/platform-browser';
+import {isDefined} from './utils';
+import {last} from 'rxjs/operators';
 
 @Component({
   selector: 'angular-editor',
-  templateUrl: "./angular-editor.component.html",
-  styleUrls: ["./angular-editor.component.scss"],
+  templateUrl: './angular-editor.component.html',
+  styleUrls: ['./angular-editor.component.scss'],
   providers: [
     {
       provide: NG_VALUE_ACCESSOR,
@@ -28,17 +37,23 @@ import {DOCUMENT} from "@angular/common";
     }
   ]
 })
-export class AngularEditorComponent implements OnInit, ControlValueAccessor, AfterContentInit {
+export class AngularEditorComponent implements OnInit, ControlValueAccessor, AfterViewInit, OnDestroy {
 
   private onChange: (value: string) => void;
   private onTouched: () => void;
 
-  placeholder: boolean;
-
   modeVisual = true;
   showPlaceholder = false;
+  disabled = false;
+  focused = false;
+
+  focusInstance: any;
+  blurInstance: any;
+
   @Input() id = '';
   @Input() config: AngularEditorConfig = angularEditorConfig;
+  @Input() placeholder = '';
+  @Input() tabIndex: number | null;
 
   @Output() html;
 
@@ -49,45 +64,45 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
   @Output() viewMode = new EventEmitter<boolean>();
 
   /** emits `blur` event when focused out from the textarea */
-  @Output() blur: EventEmitter<string> = new EventEmitter<string>();
+    // tslint:disable-next-line:no-output-native no-output-rename
+  @Output('blur') blurEvent: EventEmitter<FocusEvent> = new EventEmitter<FocusEvent>();
 
   /** emits `focus` event when focused in to the textarea */
-  @Output() focus: EventEmitter<string> = new EventEmitter<string>();
+    // tslint:disable-next-line:no-output-rename no-output-native
+  @Output('focus') focusEvent: EventEmitter<FocusEvent> = new EventEmitter<FocusEvent>();
 
-  constructor(private _renderer: Renderer2, private editorService: AngularEditorService, @Inject(DOCUMENT) private _document: any) {
+  @HostBinding('attr.tabindex') tabindex = -1;
+
+  @HostListener('focus')
+  onFocus() {
+    this.focus();
+  }
+
+  constructor(
+    private r: Renderer2,
+    private editorService: AngularEditorService,
+    @Inject(DOCUMENT) private doc: any,
+    private sanitizer: DomSanitizer,
+    private cdRef: ChangeDetectorRef,
+    @Attribute('tabindex') defaultTabIndex: string,
+    @Attribute('autofocus') private autoFocus: any
+  ) {
+    const parsedTabIndex = Number(defaultTabIndex);
+    this.tabIndex = (parsedTabIndex || parsedTabIndex === 0) ? parsedTabIndex : null;
   }
 
   ngOnInit() {
-    this.editorToolbar.id = this.id;
-    this.editorToolbar.fonts = this.config.fonts ? this.config.fonts : angularEditorConfig.fonts;
-    this.editorToolbar.customClasses = this.config.customClasses;
-    this.editorToolbar.uploadUrl = this.config.uploadUrl;
-    this.editorService.uploadUrl = this.config.uploadUrl;
-    if (this.config.showToolbar !== undefined) {
-      this.editorToolbar.showToolbar = this.config.showToolbar;
-    }
     if (this.config.defaultParagraphSeparator) {
       this.editorService.setDefaultParagraphSeparator(this.config.defaultParagraphSeparator);
     }
   }
 
-  ngAfterContentInit() {
-    if (this.config.defaultFontName) {
-      this.editorToolbar.defaultFontId = this.config.defaultFontName ? this.editorToolbar.fonts.findIndex(x => {
-        return x.name === this.config.defaultFontName;
-      }) : 0;
-      this.editorToolbar.fontId = this.editorToolbar.defaultFontId;
-      this.onEditorFocus();
-      this.editorService.setFontName(this.config.defaultFontName);
-    } else {
-      this.editorToolbar.defaultFontId = 0;
-      this.editorToolbar.fontId = 0;
+  ngAfterViewInit() {
+    if (isDefined(this.autoFocus)) {
+      this.focus();
     }
-    if (this.config.defaultFontSize) {
-      this.editorToolbar.fontSize = this.config.defaultFontSize;
-      this.onEditorFocus();
-      this.editorService.setFontSize(this.config.defaultFontSize);
-    }
+    this.configure();
+    this.cdRef.detectChanges();
   }
 
   /**
@@ -95,21 +110,40 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
    * @param command string from triggerCommand
    */
   executeCommand(command: string) {
+    this.focus();
     if (command === 'toggleEditorMode') {
       this.toggleEditorMode(this.modeVisual);
     } else if (command !== '') {
-      this.editorService.executeCommand(command);
+      if (command === 'clear') {
+        this.editorService.removeSelectedElements(this.getCustomTags());
+        this.onContentChange(this.textArea.nativeElement.innerHTML);
+      } else if (command === 'default') {
+        this.editorService.removeSelectedElements('h1,h2,h3,h4,h5,h6,p,pre');
+        this.onContentChange(this.textArea.nativeElement.innerHTML);
+      } else {
+        this.editorService.executeCommand(command);
+      }
       this.exec();
     }
-
-    this.onEditorFocus();
   }
 
   /**
    * focus event
    */
-  onTextAreaFocus(): void {
-    this.focus.emit('focus');
+  onTextAreaFocus(event: FocusEvent): void {
+    if (this.focused) {
+      event.stopPropagation();
+      return;
+    }
+    this.focused = true;
+    this.focusEvent.emit(event);
+  }
+
+  /**
+   * @description fires when cursor leaves textarea
+   */
+  public onTextAreaMouseOut(event: MouseEvent): void {
+    this.editorService.saveSelection();
   }
 
   /**
@@ -119,22 +153,32 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
     /**
      * save selection if focussed out
      */
-    this.editorService.saveSelection();
+    this.editorService.executeInNextQueueIteration(this.editorService.saveSelection);
 
     if (typeof this.onTouched === 'function') {
       this.onTouched();
     }
 
-    if (event.relatedTarget != null && (event.relatedTarget as HTMLElement).parentElement.className !== 'angular-editor-toolbar-set') {
-      this.blur.emit('blur');
+    if (event.relatedTarget !== null) {
+      const parent = (event.relatedTarget as HTMLElement).parentElement;
+      if (!parent.classList.contains('angular-editor-toolbar-set') && !parent.classList.contains('ae-picker')) {
+        this.blurEvent.emit(event);
+        this.focused = false;
+      }
     }
   }
 
   /**
-   *  focus the text area when the editor is focussed
+   *  focus the text area when the editor is focused
    */
-  onEditorFocus() {
-    this.textArea.nativeElement.focus();
+  focus() {
+    if (this.modeVisual) {
+      this.textArea.nativeElement.focus();
+    } else {
+      const sourceText = this.doc.getElementById('sourceText' + this.id);
+      sourceText.focus();
+      this.focused = true;
+    }
   }
 
   /**
@@ -142,10 +186,13 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
    * @param html html string from contenteditable
    */
   onContentChange(html: string): void {
-
+    if ((!html || html === '<br>')) {
+      html = '';
+    }
     if (typeof this.onChange === 'function') {
-      this.onChange(html);
-      if ((!html || html === '<br>' || html === '') !== this.showPlaceholder) {
+      this.onChange(this.config.sanitize || this.config.sanitize === undefined ?
+        this.sanitizer.sanitize(SecurityContext.HTML, html) : html);
+      if ((!html) !== this.showPlaceholder) {
         this.togglePlaceholder(this.showPlaceholder);
       }
     }
@@ -158,7 +205,7 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
    * @param fn a function
    */
   registerOnChange(fn: any): void {
-    this.onChange = fn;
+    this.onChange = e => (e === '<br>' ? fn('') : fn(e)) ;
   }
 
   /**
@@ -182,7 +229,7 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
       this.togglePlaceholder(this.showPlaceholder);
     }
 
-    if (value === null || value === undefined || value === '' || value === '<br>') {
+    if (value === undefined || value === '' || value === '<br>') {
       value = null;
     }
 
@@ -196,7 +243,7 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
    */
   refreshView(value: string): void {
     const normalizedValue = value === null ? '' : value;
-    this._renderer.setProperty(this.textArea.nativeElement, 'innerHTML', normalizedValue);
+    this.r.setProperty(this.textArea.nativeElement, 'innerHTML', normalizedValue);
 
     return;
   }
@@ -208,11 +255,11 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
    */
   togglePlaceholder(value: boolean): void {
     if (!value) {
-      this._renderer.addClass(this.editorWrapper.nativeElement, 'show-placeholder');
+      this.r.addClass(this.editorWrapper.nativeElement, 'show-placeholder');
       this.showPlaceholder = true;
 
     } else {
-      this._renderer.removeClass(this.editorWrapper.nativeElement, 'show-placeholder');
+      this.r.removeClass(this.editorWrapper.nativeElement, 'show-placeholder');
       this.showPlaceholder = false;
     }
   }
@@ -220,12 +267,13 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
   /**
    * Implements disabled state for this element
    *
-   * @param isDisabled
+   * @param isDisabled Disabled flag
    */
   setDisabledState(isDisabled: boolean): void {
     const div = this.textArea.nativeElement;
     const action = isDisabled ? 'addClass' : 'removeClass';
-    this._renderer[action](div, 'disabled');
+    this.r[action](div, 'disabled');
+    this.disabled = isDisabled;
   }
 
   /**
@@ -238,34 +286,44 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
     const editableElement = this.textArea.nativeElement;
 
     if (bToSource) {
-      oContent = this._document.createTextNode(editableElement.innerHTML);
-      editableElement.innerHTML = '';
+      oContent = this.r.createText(editableElement.innerHTML);
+      this.r.setProperty(editableElement, 'innerHTML', '');
+      this.r.setProperty(editableElement, 'contentEditable', false);
 
-      const oPre = this._document.createElement('pre');
-      oPre.setAttribute("style", "margin: 0; outline: none;");
-      const oCode = this._document.createElement('code');
-      editableElement.contentEditable = false;
-      oCode.id = "sourceText";
-      oCode.setAttribute("style", "white-space: pre-wrap; word-break: keep-all; margin: 0; outline: none; background-color: #fff5b9;");
-      oCode.contentEditable = 'true';
-      oCode.appendChild(oContent);
-      oPre.appendChild(oCode);
-      editableElement.appendChild(oPre);
+      const oPre = this.r.createElement('pre');
+      this.r.setStyle(oPre, 'margin', '0');
+      this.r.setStyle(oPre, 'outline', 'none');
 
-      this._document.execCommand("defaultParagraphSeparator", false, "div");
+      const oCode = this.r.createElement('code');
+      this.r.setProperty(oCode, 'id', 'sourceText' + this.id);
+      this.r.setStyle(oCode, 'display', 'block');
+      this.r.setStyle(oCode, 'white-space', 'pre-wrap');
+      this.r.setStyle(oCode, 'word-break', 'keep-all');
+      this.r.setStyle(oCode, 'outline', 'none');
+      this.r.setStyle(oCode, 'margin', '0');
+      this.r.setStyle(oCode, 'background-color', '#fff5b9');
+      this.r.setProperty(oCode, 'contentEditable', true);
+      this.r.appendChild(oCode, oContent);
+      this.focusInstance = this.r.listen(oCode, 'focus', (event) => this.onTextAreaFocus(event));
+      this.blurInstance = this.r.listen(oCode, 'blur', (event) => this.onTextAreaBlur(event));
+      this.r.appendChild(oPre, oCode);
+      this.r.appendChild(editableElement, oPre);
+
+      // ToDo move to service
+      this.doc.execCommand('defaultParagraphSeparator', false, 'div');
 
       this.modeVisual = false;
       this.viewMode.emit(false);
       oCode.focus();
     } else {
-      if (this._document.all) {
-        editableElement.innerHTML = editableElement.innerText;
+      if (this.doc.querySelectorAll) {
+        this.r.setProperty(editableElement, 'innerHTML', editableElement.innerText);
       } else {
-        oContent = this._document.createRange();
+        oContent = this.doc.createRange();
         oContent.selectNodeContents(editableElement.firstChild);
-        editableElement.innerHTML = oContent.toString();
+        this.r.setProperty(editableElement, 'innerHTML', oContent.toString());
       }
-      editableElement.contentEditable = true;
+      this.r.setProperty(editableElement, 'contentEditable', true);
       this.modeVisual = true;
       this.viewMode.emit(true);
       this.onContentChange(editableElement.innerHTML);
@@ -283,8 +341,9 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
     this.editorToolbar.triggerButtons();
 
     let userSelection;
-    if (window.getSelection) {
-      userSelection = window.getSelection();
+    if (this.doc.getSelection) {
+      userSelection = this.doc.getSelection();
+      this.editorService.executeInNextQueueIteration(this.editorService.saveSelection);
     }
 
     let a = userSelection.focusNode;
@@ -296,4 +355,53 @@ export class AngularEditorComponent implements OnInit, ControlValueAccessor, Aft
     this.editorToolbar.triggerBlocks(els);
   }
 
+  private configure() {
+    this.editorToolbar.id = this.id;
+    this.config.toolbarPosition = this.config.toolbarPosition ? this.config.toolbarPosition : angularEditorConfig.toolbarPosition;
+    if (this.config.showToolbar !== undefined) {
+      this.editorToolbar.showToolbar = this.config.showToolbar;
+    }
+    const fonts = this.config.fonts ? this.config.fonts : angularEditorConfig.fonts;
+    this.editorToolbar.fonts = fonts.map(x => {
+      return {label: x.name, value: x.name};
+    });
+    if (this.config.customClasses) {
+      this.editorToolbar.customClasses = this.config.customClasses;
+      this.editorToolbar.customClassList = this.config.customClasses.map((x, i) => ({label: x.name, value: i.toString()}));
+      this.editorToolbar.customClassList.unshift({label: 'Clear Class', value: '-1'});
+    }
+    this.editorToolbar.uploadUrl = this.config.uploadUrl;
+    this.editorService.uploadUrl = this.config.uploadUrl;
+    if (this.config.defaultFontName) {
+      this.editorToolbar.fontName = this.config.defaultFontName;
+      this.editorService.setFontName(this.config.defaultFontName);
+    } else {
+      this.editorToolbar.fontName = 'Times New Roman';
+    }
+    if (this.config.defaultFontSize) {
+      this.editorToolbar.fontSize = this.config.defaultFontSize;
+      this.editorService.setFontSize(this.config.defaultFontSize);
+    }
+  }
+
+  getCustomTags() {
+    const tags = ['span'];
+    this.config.customClasses.forEach(x => {
+      if (x.tag !== undefined) {
+        if (!tags.includes(x.tag)) {
+          tags.push(x.tag);
+        }
+      }
+    });
+    return tags.join(',');
+  }
+
+  ngOnDestroy() {
+    if (this.blurInstance) {
+      this.blurInstance();
+    }
+    if (this.focusInstance) {
+      this.focusInstance();
+    }
+  }
 }
