@@ -1,8 +1,8 @@
-import {Component, ElementRef, EventEmitter, Inject, Output, Renderer2, ViewChild} from '@angular/core';
+import {Component, ElementRef, EventEmitter, Inject, Input, Output, Renderer2, ViewChild} from '@angular/core';
 import {AngularEditorService} from './angular-editor.service';
 import {HttpResponse} from '@angular/common/http';
 import {DOCUMENT} from '@angular/common';
-import {CustomClass, Font} from './config';
+import {CustomClass} from './config';
 import {SelectOption} from './ae-select/ae-select.component';
 
 @Component({
@@ -12,13 +12,10 @@ import {SelectOption} from './ae-select/ae-select.component';
 })
 
 export class AngularEditorToolbarComponent {
-  id = '';
   htmlMode = false;
-  showToolbar = true;
   linkSelected = false;
   block = 'default';
-  defaultFontId;
-  fontName;
+  fontName = 'Times New Roman';
   fontSize = '3';
   foreColour;
   backColor;
@@ -57,10 +54,6 @@ export class AngularEditorToolbarComponent {
       value: 'p',
     },
     {
-      label: 'Heading 7',
-      value: 'h7',
-    },
-    {
       label: 'Predefined',
       value: 'pre'
     },
@@ -74,7 +67,7 @@ export class AngularEditorToolbarComponent {
     }
   ];
 
-  fonts: SelectOption[] = [{label: '', value: ''}];
+  // fonts: SelectOption[] = [{label: '', value: ''}];
   fontSizes: SelectOption[] = [
     {
       label: '1',
@@ -107,9 +100,10 @@ export class AngularEditorToolbarComponent {
   ];
 
   customClassId = '-1';
-  customClasses: CustomClass[];
+  // tslint:disable-next-line:variable-name
+  _customClasses: CustomClass[];
   customClassList: SelectOption[] = [{label: '', value: ''}];
-  uploadUrl: string;
+  // uploadUrl: string;
 
   tagMap = {
     BLOCKQUOTE: 'indent',
@@ -121,9 +115,37 @@ export class AngularEditorToolbarComponent {
   buttons = ['bold', 'italic', 'underline', 'strikeThrough', 'subscript', 'superscript', 'justifyLeft', 'justifyCenter',
     'justifyRight', 'justifyFull', 'indent', 'outdent', 'insertUnorderedList', 'insertOrderedList', 'link'];
 
+  @Input() id: string;
+  @Input() uploadUrl: string;
+  @Input() showToolbar: boolean;
+  @Input() fonts: SelectOption[] = [{label: '', value: ''}];
+
+  @Input()
+  set customClasses(classes: CustomClass[]) {
+    if (classes) {
+      this._customClasses = classes;
+      this.customClassList = this._customClasses.map((x, i) => ({label: x.name, value: i.toString()}));
+      this.customClassList.unshift({label: 'Clear Class', value: '-1'});
+    }
+  }
+
+  @Input()
+  set defaultFontName(value: string) {
+    if (value) {
+      this.fontName = value;
+    }
+  }
+
+  @Input()
+  set defaultFontSize(value: string) {
+    if (value) {
+      this.fontSize = value;
+    }
+  }
+
   @Output() execute: EventEmitter<string> = new EventEmitter<string>();
 
-  @ViewChild('fileInput') myInputFile: ElementRef;
+  @ViewChild('fileInput', {static: true}) myInputFile: ElementRef;
 
   public get isLinkButtonDisabled(): boolean {
     return this.htmlMode || !Boolean(this.editorService.selectedText);
@@ -184,8 +206,8 @@ export class AngularEditorToolbarComponent {
     });
 
     found = false;
-    if (this.customClasses) {
-      this.customClasses.forEach((y, index) => {
+    if (this._customClasses) {
+      this._customClasses.forEach((y, index) => {
         const node = nodes.find(x => {
           if (x instanceof Element) {
             return x.className === y.class;
@@ -323,7 +345,7 @@ export class AngularEditorToolbarComponent {
     if (classId === '-1') {
       this.execute.emit('clear');
     } else {
-      this.editorService.createCustomClass(this.customClasses[+classId]);
+      this.editorService.createCustomClass(this._customClasses[+classId]);
     }
   }
 }
